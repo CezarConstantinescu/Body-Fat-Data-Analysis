@@ -1,0 +1,157 @@
+﻿
+## Objective
+
+This report examines the individual relationship between each predictor and the target `BodyFat` after removing the leakage variable `Density`.
+
+It includes:
+1. A faceted scatter-plot grid (one panel per predictor) with linear trend lines, 95% confidence bands, and per-panel Pearson correlation.
+2. A ranked bar chart of absolute Pearson correlations with `BodyFat`.
+3. A focused `Abdomen` vs `BodyFat` scatter plot colored by age group to explore possible age-related effect modification.
+
+## Setup and Data
+
+```{r}
+library(tidyverse)
+
+bodyfat_raw <- read_csv("data/bodyfat.csv", show_col_types = FALSE)
+
+# Remove leakage variable before any predictor-vs-target analysis
+bodyfat <- bodyfat_raw %>%
+  select(-Density)
+
+predictor_names <- setdiff(names(bodyfat), "BodyFat")
+
+# Pearson correlation of each predictor with BodyFat
+corr_tbl <- map_dfr(predictor_names, function(v) {
+  tibble(
+    Predictor = v,
+    pearson_r = cor(bodyfat[[v]], bodyfat$BodyFat, use = "complete.obs")
+  )
+}) %>%
+  mutate(abs_r = abs(pearson_r)) %>%
+  arrange(desc(abs_r))
+
+corr_tbl
+```
+
+## 1. Faceted Scatter Plot Grid with Linear Trend and 95% CI
+
+```{r}
+plot_data_long <- bodyfat %>%
+  pivot_longer(
+    cols = all_of(predictor_names),
+    names_to = "Predictor",
+    values_to = "Value"
+  )
+
+corr_labels <- corr_tbl %>%
+  transmute(
+    Predictor,
+    label = paste0("r = ", sprintf("%.2f", pearson_r))
+  )
+
+p_faceted <- ggplot(plot_data_long, aes(x = Value, y = BodyFat)) +
+  geom_point(alpha = 0.65, color = "#2C3E50", size = 1.8) +
+  geom_smooth(method = "lm", se = TRUE, color = "#C0392B", fill = "#F5B7B1", linewidth = 0.8) +
+  geom_text(
+    data = corr_labels,
+    aes(x = -Inf, y = Inf, label = label),
+    inherit.aes = FALSE,
+    hjust = -0.1,
+    vjust = 1.2,
+    size = 3.3,
+    color = "#1B2631",
+    fontface = "bold"
+  ) +
+  facet_wrap(~ Predictor, scales = "free_x", ncol = 4) +
+  labs(
+    title = "Predictor-wise Relationship with BodyFat",
+    subtitle = "Each panel shows a predictor vs BodyFat with linear fit and 95% confidence band",
+    x = "Predictor value",
+    y = "BodyFat (%)"
+  ) +
+  theme_minimal(base_size = 11)
+
+p_faceted
+```
+
+Interpretation:
+- The panel annotations (`r`) make it easy to compare single-predictor strength at a glance.
+- Most body-circumference predictors show positive and approximately linear trends with `BodyFat`.
+- Limb measurements (for example, `Wrist`, `Ankle`) appear weaker than torso-centric variables.
+
+## 2. Ranked Absolute Correlation with BodyFat
+
+```{r}
+corr_ranked <- corr_tbl %>%
+  mutate(Predictor = fct_reorder(Predictor, abs_r))
+
+p_ranked <- ggplot(corr_ranked, aes(x = Predictor, y = abs_r)) +
+  geom_col(fill = "#1F77B4", alpha = 0.9) +
+  coord_flip() +
+  labs(
+    title = "Absolute Pearson Correlation with BodyFat",
+    subtitle = "Higher bars indicate more informative single predictors",
+    x = NULL,
+    y = "|Pearson r|"
+  ) +
+  theme_minimal(base_size = 12)
+
+p_ranked
+```
+
+Key result:
+- The strongest single predictor by absolute Pearson correlation is `r corr_tbl$Predictor[1]` (`|r| = `r sprintf("%.3f", corr_tbl$abs_r[1])`).
+
+## 3. Abdomen vs BodyFat by Age Group
+
+```{r}
+bodyfat_age <- bodyfat %>%
+  mutate(
+    AgeGroup = ntile(Age, 3),
+    AgeGroup = factor(AgeGroup, labels = c("Younger", "Middle", "Older"))
+  )
+
+p_abdomen_age <- ggplot(bodyfat_age, aes(x = Abdomen, y = BodyFat, color = AgeGroup)) +
+  geom_point(alpha = 0.75, size = 2.1) +
+  geom_smooth(method = "lm", se = FALSE, linewidth = 0.9) +
+  scale_color_manual(values = c("Younger" = "#1B9E77", "Middle" = "#D95F02", "Older" = "#7570B3")) +
+  labs(
+    title = "Abdomen Circumference vs BodyFat by Age Group",
+    subtitle = "Colored points and group-specific linear fits",
+    x = "Abdomen circumference",
+    y = "BodyFat (%)",
+    color = "Age group"
+  ) +
+  theme_minimal(base_size = 12)
+
+p_abdomen_age
+```
+
+```{r}
+# Quantify evidence of curvature in the Abdomen-BodyFat relationship
+abdomen_lm_linear <- lm(BodyFat ~ Abdomen, data = bodyfat)
+abdomen_lm_quadratic <- lm(BodyFat ~ Abdomen + I(Abdomen^2), data = bodyfat)
+curvature_test <- anova(abdomen_lm_linear, abdomen_lm_quadratic)
+quad_p_value <- curvature_test$`Pr(>F)`[2]
+
+# Quantify whether age group modifies the Abdomen slope
+abdomen_age_main <- lm(BodyFat ~ Abdomen + AgeGroup, data = bodyfat_age)
+abdomen_age_interaction <- lm(BodyFat ~ Abdomen * AgeGroup, data = bodyfat_age)
+interaction_test <- anova(abdomen_age_main, abdomen_age_interaction)
+interaction_p_value <- interaction_test$`Pr(>F)`[2]
+
+list(
+  quadratic_term_p_value = quad_p_value,
+  abdomen_age_interaction_p_value = interaction_p_value
+)
+```
+
+## Findings
+
+- Torso measurements dominate the single-variable signal for `BodyFat`, with `Abdomen` expected to be among the top features.
+- The predictor-vs-target panels mostly support an approximately linear pattern, especially for stronger circumference predictors.
+- For `Abdomen` specifically, the linear trend is strong and visually tight. Use the quadratic-term p-value above to check for curvature; if it is not small, the linear approximation is likely adequate.
+- The age-colored scatter and group-specific lines show whether slope/intercept differ by age tercile. If the interaction p-value is not small, age does not strongly modify the Abdomen-BodyFat slope in this sample.
+
+Overall, the plots and rankings reinforce that central body-size measurements are the most informative single predictors of body fat in this dataset.

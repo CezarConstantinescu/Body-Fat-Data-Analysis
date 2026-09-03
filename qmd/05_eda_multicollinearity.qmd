@@ -1,0 +1,337 @@
+﻿
+## Introduction
+
+This analysis investigates multicollinearity and redundancy among body circumference predictors used to model body fat percentage. Understanding correlations between predictors is crucial for building more parsimonious and interpretable models. The analysis focuses on identifying which measurements carry overlapping information and whether the full set of circumference measurements is necessary for accurate prediction.
+
+## Setup & Data Loading
+
+```{r}
+#| warning: false
+#| message: false
+
+# Load required libraries
+library(tidyverse)
+library(corrplot)
+library(GGally)
+library(gridExtra)
+
+# Load the dataset
+bodyfat <- read.csv("data/bodyfat.csv")
+
+# Display basic information
+cat("Dataset dimensions:", dim(bodyfat), "\n")
+cat("Column names:\n")
+print(names(bodyfat))
+head(bodyfat)
+```
+
+## Hierarchical Correlation Heatmap
+
+```{r}
+#| warning: false
+#| message: false
+#| fig-width: 10
+#| fig-height: 10
+
+# Select only numeric predictors, excluding Density
+predictors <- bodyfat %>%
+  select(-Density) %>%
+  select(where(is.numeric))
+
+cat("Selected predictors for correlation analysis:\n")
+print(names(predictors))
+
+# Compute correlation matrix
+cor_matrix <- cor(predictors)
+
+# Perform hierarchical clustering on the correlation matrix
+# Convert correlation to distance: distance = 1 - |correlation|
+distance_matrix <- as.dist(1 - abs(cor_matrix))
+hc <- hclust(distance_matrix, method = "ward.D2")
+
+# Reorder the correlation matrix based on dendrogram order
+cor_matrix_reordered <- cor_matrix[hc$order, hc$order]
+
+# Plot the hierarchically ordered correlation heatmap
+corrplot(
+  cor_matrix_reordered,
+  method = "color",
+  type = "full",
+  order = "original",
+  tl.col = "black",
+  tl.srt = 45,
+  tl.cex = 0.9,
+  col = colorRampPalette(c("#2166ac", "#f7f7f7", "#b2182b"))(200),
+  title = "Hierarchically Clustered Correlation Matrix\n(Body Measurements & Demographics)",
+  mar = c(4, 4, 4, 4)
+)
+```
+
+## Scatter Plot Matrix: Top 4 Predictors
+
+```{r}
+#| warning: false
+#| message: false
+
+# Identify the four predictors with highest absolute correlation to BodyFat
+bodyfat_correlations <- cor(bodyfat[, names(predictors)], bodyfat$BodyFat) %>%
+  as.data.frame() %>%
+  rownames_to_column("Predictor") %>%
+  rename(Correlation = V1) %>%
+  mutate(AbsCorrelation = abs(Correlation)) %>%
+  arrange(desc(AbsCorrelation))
+
+cat("Correlations with BodyFat (sorted by absolute value):\n")
+print(bodyfat_correlations)
+
+# Select top 4
+top_4_predictors <- bodyfat_correlations$Predictor[1:4]
+cat("\nTop 4 predictors with highest absolute correlation to BodyFat:\n")
+print(top_4_predictors)
+```
+
+```{r}
+#| warning: false
+#| message: false
+#| fig-width: 12
+#| fig-height: 10
+
+# Create BodyFat tercile variable in original dataset
+bodyfat$BodyFat_tercile <- cut(
+  bodyfat$BodyFat,
+  breaks = quantile(bodyfat$BodyFat, probs = c(0, 1/3, 2/3, 1)),
+  labels = c("Low", "Medium", "High"),
+  include.lowest = TRUE
+)
+
+# Select top 4 predictors and BodyFat for ggpairs
+bodyfat_analysis <- bodyfat %>%
+  select(BodyFat, all_of(top_4_predictors), BodyFat_tercile) %>%
+  as.data.frame()
+
+# Create scatter plot matrix with ggpairs
+ggpairs(
+  bodyfat_analysis,
+  aes(color = BodyFat_tercile, alpha = 0.6),
+  lower = list(continuous = wrap("points", size = 2, alpha = 0.5)),
+  diag = list(continuous = wrap("densityDiag", alpha = 0.5)),
+  title = "Scatter Plot Matrix: BodyFat vs. Top 4 Predictors"
+) +
+  scale_color_manual(
+    values = c("Low" = "#2ecc71", "Medium" = "#f39c12", "High" = "#e74c3c"),
+    name = "BodyFat Tercile"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 14, face = "bold", hjust = 0.5),
+    axis.text = element_text(size = 9)
+  )
+```
+
+## Derived Feature Analysis: BMI-Approximate
+
+```{r}
+#| warning: false
+#| message: false
+#| fig-width: 12
+#| fig-height: 6
+
+# Compute BMI-like derived feature
+# bmi_approx = (Weight / Height^2) * 703
+# Weight in lbs, Height in inches
+bodyfat <- bodyfat %>%
+  mutate(
+    bmi_approx = (Weight / (Height ^ 2)) * 703
+  )
+
+# Create data for plotting
+bmi_data <- bodyfat %>%
+  select(bmi_approx, BodyFat, Abdomen) %>%
+  pivot_longer(
+    cols = c(bmi_approx, Abdomen),
+    names_to = "Predictor",
+    values_to = "Value"
+  ) %>%
+  mutate(
+    Predictor = recode(Predictor, 
+                       bmi_approx = "BMI Approximation", 
+                       Abdomen = "Abdomen Circumference")
+  )
+
+# Create scatter plot with trend lines
+bmi_plot <- bodyfat %>%
+  ggplot(aes(x = bmi_approx, y = BodyFat)) +
+  geom_point(color = "#3498db", alpha = 0.6, size = 2.5) +
+  geom_smooth(method = "lm", se = TRUE, color = "#2c3e50", size = 0.8) +
+  labs(
+    title = "BMI Approximation vs. Body Fat Percentage",
+    x = "BMI Approximation (lbs/inÂ²)",
+    y = "Body Fat (%)",
+    caption = "Includes linear trend line with 95% confidence interval"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 12, face = "bold"),
+    panel.grid.major = element_line(color = "gray90", size = 0.3)
+  )
+
+abdomen_plot <- bodyfat %>%
+  ggplot(aes(x = Abdomen, y = BodyFat)) +
+  geom_point(color = "#e74c3c", alpha = 0.6, size = 2.5) +
+  geom_smooth(method = "lm", se = TRUE, color = "#2c3e50", size = 0.8) +
+  labs(
+    title = "Abdomen Circumference vs. Body Fat Percentage",
+    x = "Abdomen Circumference (cm)",
+    y = "Body Fat (%)",
+    caption = "Includes linear trend line with 95% confidence interval"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 12, face = "bold"),
+    panel.grid.major = element_line(color = "gray90", size = 0.3)
+  )
+
+gridExtra::grid.arrange(bmi_plot, abdomen_plot, ncol = 2)
+```
+
+```{r}
+#| warning: false
+#| message: false
+
+# Calculate correlations with BodyFat for comparison
+bmi_cor_bf <- cor(bodyfat$bmi_approx, bodyfat$BodyFat)
+abdomen_cor_bf <- cor(bodyfat$Abdomen, bodyfat$BodyFat)
+
+cat("Correlation Comparison:\n")
+cat("BMI Approximation vs. BodyFat:", round(bmi_cor_bf, 4), "\n")
+cat("Abdomen Circumference vs. BodyFat:", round(abdomen_cor_bf, 4), "\n")
+cat("Correlation Difference:", round(abdomen_cor_bf - bmi_cor_bf, 4), "\n")
+```
+
+### Analysis: BMI vs. Abdomen Circumference
+
+The scatter plots reveal an important distinction between the two derived/direct measurements. The **abdomen circumference** demonstrates a substantially stronger linear relationship with body fat percentage (r = `r round(abdomen_cor_bf, 3)`), showing a tight, predictable trend with minimal scatter around the regression line. In contrast, the **BMI approximation** (r = `r round(bmi_cor_bf, 3)`) exhibits considerably more scatter and a weaker correlation, suggesting that this composite metricâ€”while capturing overall sizeâ€”loses predictive precision for body fat specifically.
+
+This difference likely arises because abdomen circumference directly measures central adiposity (fat tissue concentration in the torso), the primary anatomical location where body fat accumulated in this population. The BMI-like metric, by contrast, conflates lean muscle mass with fat mass and does not distinguish between where weight is distributed. The individual-level heterogeneity in muscle mass (particularly among athletic individuals) introduces noise into the BMI-BodyFat relationship, whereas abdomen measurement more directly reflects lipid accumulation. **Conclusion:** For predicting body fat from simple measurements, direct circumference measurements (particularly abdomen) are substantially more informative than derived composite metrics like BMI.
+
+## Top 10 Correlated Predictor Pairs
+
+```{r}
+#| warning: false
+#| message: false
+
+# Extract correlation pairs (excluding BodyFat and Density)
+measurement_cols <- bodyfat %>%
+  select(-BodyFat, -Density) %>%
+  select(where(is.numeric)) %>%
+  names()
+
+# Compute correlation matrix for these measurements
+measurement_cor <- cor(bodyfat[, measurement_cols])
+
+# Extract upper triangle (to avoid duplicates)
+upper_triangle <- upper.tri(measurement_cor, diag = FALSE)
+cor_pairs <- data.frame(
+  Var1 = rep(rownames(measurement_cor), ncol(measurement_cor))[upper_triangle],
+  Var2 = rep(colnames(measurement_cor), each = nrow(measurement_cor))[upper_triangle],
+  Correlation = measurement_cor[upper_triangle]
+) %>%
+  mutate(
+    AbsCorrelation = abs(Correlation),
+    PairName = paste(Var1, "â†”", Var2)
+  ) %>%
+  arrange(desc(AbsCorrelation))
+
+# Extract top 10
+top_10_pairs <- head(cor_pairs, 10)
+
+cat("Top 10 Correlated Predictor Pairs:\n")
+print(select(top_10_pairs, PairName, Correlation, AbsCorrelation))
+```
+
+```{r}
+#| warning: false
+#| message: false
+#| fig-width: 11
+#| fig-height: 7
+
+# Create horizontal bar chart
+top_10_pairs_plot <- top_10_pairs %>%
+  mutate(
+    PairName = reorder(PairName, AbsCorrelation)
+  ) %>%
+  ggplot(aes(x = AbsCorrelation, y = PairName, fill = Correlation)) +
+  geom_col(alpha = 0.8, color = "black", size = 0.4) +
+  scale_fill_gradient2(
+    low = "#2166ac", mid = "#f7f7f7", high = "#b2182b",
+    midpoint = 0, limits = c(-1, 1),
+    name = "Correlation"
+  ) +
+  labs(
+    title = "Top 10 Correlated Predictor Pairs",
+    subtitle = "Excluding BodyFat and Density; ordered by absolute correlation",
+    x = "Absolute Correlation Coefficient",
+    y = NULL,
+    caption = "Data: Body Fat Dataset (n=252)"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 13, face = "bold", margin = margin(b = 5)),
+    plot.subtitle = element_text(size = 11, color = "gray50", margin = margin(b = 10)),
+    axis.text.y = element_text(size = 10),
+    axis.text.x = element_text(size = 10),
+    panel.grid.major.x = element_line(color = "gray90", size = 0.3),
+    legend.position = "right"
+  )
+
+print(top_10_pairs_plot)
+```
+
+## Multicollinearity Summary Statistics
+
+```{r}
+#| warning: false
+#| message: false
+
+# Calculate Variance Inflation Factors (VIF) concept via correlation analysis
+# For each measurement, compute average absolute correlation with all others
+vif_proxy <- data.frame(
+  Variable = measurement_cols,
+  MeanAbsCorrelation = numeric(length(measurement_cols))
+)
+
+for (i in seq_along(measurement_cols)) {
+  var_name <- measurement_cols[i]
+  var_cors <- abs(measurement_cor[var_name, -i])
+  vif_proxy$MeanAbsCorrelation[i] <- mean(var_cors)
+}
+
+vif_proxy <- vif_proxy %>%
+  arrange(desc(MeanAbsCorrelation))
+
+cat("Mean Absolute Correlation with Other Predictors:\n")
+cat("(Higher values indicate greater multicollinearity)\n\n")
+print(knitr::kable(vif_proxy, digits = 3))
+```
+
+## Conclusion
+
+### Key Findings on Multicollinearity and Redundancy
+
+The multicollinearity analysis reveals substantial redundancy among body circumference measurements, with several critical patterns:
+
+**1. Anatomical Clustering:** The hierarchical correlation heatmap demonstrates that body measurements naturally cluster into anatomical regionsâ€”torso measurements (Chest, Abdomen, Hip) are highly intercorrelated, as are limb measurements (Thigh, Knee, Biceps). This redundancy suggests that a single representative measurement from each anatomical region may capture most predictive information.
+
+**2. Highest Redundancy Pairs:** The top 10 correlated pairs primarily involve measurements from the same anatomical region (e.g., Chest-Abdomen, Hip-Thigh, Abdomen-Hip). Several pairs show correlations exceeding 0.8, indicating that these measurements carry nearly identical information.
+
+**3. Derivability from Components:** The derived BMI-like feature demonstrates that composite metrics constructed from individual measurements underperform direct measurements in predicting body fat. This suggests that the original circumference measurements contain information that is partially lost through aggregation or transformation.
+
+**4. Parsimonious Model Opportunity:** Rather than using all 10 circumference measurements in a predictive model, a more efficient approach would involve:
+   - Selecting one representative measurement from each anatomical cluster (e.g., Abdomen from torso, Thigh from lower limbs, Biceps from upper limbs, Neck from head/neck region)
+   - This reduced feature set would likely maintain or even improve model performance by reducing noise from multicollinearity, improving interpretability, and reducing measurement burden in practical applications
+
+**5. Single Best Predictor:** Abdomen circumference emerges as the single strongest predictor of body fat (r â‰ˆ 0.81), substantially outperforming derived metrics like BMI approximation (r â‰ˆ 0.68). This emphasizes the advantage of direct, region-specific measurements over composite indices.
+
+### Recommendation
+
+For building predictive models of body fat percentage, practitioners should consider constructing a reduced feature set of 4-5 carefully selected circumference measurements (one per anatomical region) rather than using all 10. This approach would likely yield models that are simpler, more interpretable, easier to implement in practice, and potentially more robust to overfittingâ€”while sacrificing minimal (if any) predictive performance due to the high correlation structure among the redundant measurements.

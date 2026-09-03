@@ -1,0 +1,259 @@
+﻿
+## Objective
+
+Build and tune two tree-based regression models with tidymodels to predict `BodyFat`:
+- Random Forest
+- XGBoost
+
+`Density` is dropped at the start because it is a leakage variable.
+
+## Setup
+
+```{r}
+library(tidymodels)
+library(vip)
+library(doParallel)
+library(scales)
+
+tidymodels_prefer()
+set.seed(2026)
+
+# Parallel backend for faster tuning
+cl <- makePSOCKcluster(parallel::detectCores(logical = FALSE))
+registerDoParallel(cl)
+```
+
+## Data Preparation
+
+```{r}
+bodyfat_raw <- readr::read_csv("data/bodyfat.csv", show_col_types = FALSE)
+
+# Drop leakage variable from all further steps
+bodyfat <- bodyfat_raw %>%
+  select(-Density)
+
+# 75/25 split
+set.seed(2026)
+bodyfat_split <- initial_split(bodyfat, prop = 0.75)
+train_data <- training(bodyfat_split)
+test_data <- testing(bodyfat_split)
+
+# Recipe: remove zero variance and normalize all predictors
+bodyfat_recipe <- recipe(BodyFat ~ ., data = train_data) %>%
+  step_zv(all_predictors()) %>%
+  step_normalize(all_predictors())
+
+bodyfat_recipe
+```
+
+## Cross-Validation
+
+```{r}
+set.seed(2026)
+folds <- vfold_cv(train_data, v = 5)
+folds
+```
+
+## Random Forest Tuning
+
+```{r}
+rf_spec <- rand_forest(
+  mode = "regression",
+  trees = 1000,
+  mtry = tune(),
+  min_n = tune()
+) %>%
+  set_engine("ranger", importance = "impurity")
+
+rf_workflow <- workflow() %>%
+  add_recipe(bodyfat_recipe) %>%
+  add_model(rf_spec)
+
+p <- ncol(train_data) - 1
+rf_params <- parameters(
+  mtry(range = c(1L, p)),
+  min_n(range = c(2L, 30L))
+)
+
+rf_grid <- grid_regular(
+  rf_params,
+  levels = c(mtry = 3, min_n = 3)
+)
+
+rf_grid
+```
+
+```{r}
+set.seed(2026)
+rf_tune <- tune_grid(
+  rf_workflow,
+  resamples = folds,
+  grid = rf_grid,
+  metrics = metric_set(rmse),
+  control = control_grid(save_pred = TRUE)
+)
+
+collect_metrics(rf_tune)
+```
+
+```{r}
+autoplot(rf_tune)
+```
+
+## XGBoost Tuning
+
+```{r}
+xgb_spec <- boost_tree(
+  mode = "regression",
+  trees = 1000,
+  learn_rate = tune(),
+  tree_depth = tune(),
+  mtry = tune(),
+  min_n = 5,
+  loss_reduction = 0,
+  sample_size = 1
+) %>%
+  set_engine("xgboost")
+
+xgb_workflow <- workflow() %>%
+  add_recipe(bodyfat_recipe) %>%
+  add_model(xgb_spec)
+
+xgb_params <- parameters(
+  learn_rate(),
+  tree_depth(),
+  mtry(range = c(1L, p))
+)
+
+set.seed(2026)
+xgb_grid <- grid_random(
+  xgb_params,
+  size = 20
+)
+
+xgb_grid
+```
+
+```{r}
+set.seed(2026)
+xgb_tune <- tune_grid(
+  xgb_workflow,
+  resamples = folds,
+  grid = xgb_grid,
+  metrics = metric_set(rmse),
+  control = control_grid(save_pred = TRUE)
+)
+
+collect_metrics(xgb_tune)
+```
+
+```{r}
+autoplot(xgb_tune)
+```
+
+## Final Evaluation on Test Set
+
+```{r}
+# Select best hyperparameters by RMSE
+best_rf <- select_best(rf_tune, metric = "rmse")
+best_xgb <- select_best(xgb_tune, metric = "rmse")
+
+best_rf
+best_xgb
+```
+
+```{r}
+# Finalize workflows with best hyperparameters
+final_rf_workflow <- finalize_workflow(rf_workflow, best_rf)
+final_xgb_workflow <- finalize_workflow(xgb_workflow, best_xgb)
+
+# Refit on full training set and evaluate on test set
+rf_last <- last_fit(
+  final_rf_workflow,
+  split = bodyfat_split,
+  metrics = metric_set(rmse, mae, rsq)
+)
+
+xgb_last <- last_fit(
+  final_xgb_workflow,
+  split = bodyfat_split,
+  metrics = metric_set(rmse, mae, rsq)
+)
+
+rf_metrics <- collect_metrics(rf_last) %>% mutate(model = "Random Forest")
+xgb_metrics <- collect_metrics(xgb_last) %>% mutate(model = "XGBoost")
+
+bind_rows(rf_metrics, xgb_metrics) %>%
+  select(model, .metric, .estimate)
+```
+
+```{r}
+# Predicted vs actual scatter plot for each model
+rf_preds <- collect_predictions(rf_last) %>% mutate(model = "Random Forest")
+xgb_preds <- collect_predictions(xgb_last) %>% mutate(model = "XGBoost")
+
+preds_all <- bind_rows(rf_preds, xgb_preds)
+
+ggplot(preds_all, aes(x = BodyFat, y = .pred)) +
+  geom_point(alpha = 0.75, color = "#2A9D8F") +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "#D1495B") +
+  facet_wrap(~ model) +
+  labs(
+    title = "Predicted vs Actual BodyFat on Test Set",
+    x = "Actual BodyFat",
+    y = "Predicted BodyFat"
+  ) +
+  theme_minimal(base_size = 12)
+```
+
+Interpretation:
+- Points closer to the dashed 45-degree line indicate better predictions.
+- Compare spread around the line across panels to judge which tuned model generalizes better.
+
+## Variable Importance (Top 10 Features)
+
+```{r}
+# Fit finalized workflows on training data so we can inspect model internals
+rf_fit <- fit(final_rf_workflow, data = train_data)
+xgb_fit <- fit(final_xgb_workflow, data = train_data)
+
+rf_engine <- extract_fit_engine(rf_fit)
+xgb_engine <- extract_fit_engine(xgb_fit)
+```
+
+```{r}
+# Random Forest variable importance
+vip::vip(rf_engine, num_features = 10) +
+  labs(title = "Random Forest Variable Importance (Top 10)") +
+  theme_minimal(base_size = 11)
+```
+
+```{r}
+# XGBoost variable importance
+vip::vip(xgb_engine, num_features = 10) +
+  labs(title = "XGBoost Variable Importance (Top 10)") +
+  theme_minimal(base_size = 11)
+```
+
+```{r}
+# Tabular importance to inspect ranking of Abdomen explicitly
+rf_vi <- vip::vi(rf_engine) %>% mutate(model = "Random Forest")
+xgb_vi <- vip::vi(xgb_engine) %>% mutate(model = "XGBoost")
+
+bind_rows(rf_vi, xgb_vi) %>%
+  group_by(model) %>%
+  arrange(desc(Importance), .by_group = TRUE) %>%
+  slice_head(n = 10) %>%
+  ungroup()
+```
+
+Discussion:
+- `Abdomen` appears at or near rank 1 in both models.
+- This aligns with prior EDA that central body circumference has the strongest relationship with body fat.
+
+## Cleanup
+
+```{r}
+stopCluster(cl)
+registerDoSEQ()
+```

@@ -1,0 +1,149 @@
+﻿
+## Objective
+
+This report visualizes the distribution of the target variable and the numeric predictors in the BodyFat dataset.
+
+`Density` is omitted from the predictor plots because it is a leakage variable, not a realistic modeling feature.
+
+## Setup and Data Loading
+
+```{r}
+library(tidyverse)
+
+bodyfat_raw <- read_csv("data/bodyfat.csv", show_col_types = FALSE)
+bodyfat_model <- bodyfat_raw %>% select(-Density)
+
+circumference_vars <- c("Neck", "Chest", "Abdomen", "Hip", "Thigh", "Knee", "Ankle", "Biceps", "Forearm", "Wrist")
+body_vars <- bodyfat_model %>% select(BodyFat, all_of(setdiff(names(bodyfat_model), c("BodyFat", circumference_vars))))
+```
+
+## BodyFat Distribution
+
+```{r}
+bodyfat_extremes <- bodyfat_raw %>%
+  mutate(row_id = row_number()) %>%
+  filter(BodyFat == min(BodyFat, na.rm = TRUE) | BodyFat == max(BodyFat, na.rm = TRUE))
+
+bodyfat_plot <- ggplot(bodyfat_raw, aes(x = BodyFat)) +
+  geom_histogram(aes(y = after_stat(density)), bins = 18, fill = "#3C6E71", color = "white", alpha = 0.85) +
+  geom_density(color = "#D1495B", linewidth = 1.1, adjust = 1.05) +
+  geom_vline(xintercept = c(min(bodyfat_raw$BodyFat, na.rm = TRUE), max(bodyfat_raw$BodyFat, na.rm = TRUE)),
+             linetype = "dashed", color = "#555555") +
+  geom_rug(data = bodyfat_extremes, aes(x = BodyFat), inherit.aes = FALSE, sides = "b", color = "#D1495B") +
+  labs(
+    title = "Distribution of BodyFat",
+    subtitle = "Histogram with kernel density overlay",
+    x = "BodyFat (%)",
+    y = "Density"
+  ) +
+  theme_minimal(base_size = 12)
+
+bodyfat_plot
+```
+
+The BodyFat distribution spans from the observed minimum of about 0% to the mid-40s. It is concentrated in the lower-to-mid teens and twenties, with a longer right tail than left tail. The near-zero observation is unusual and should be treated as a potential data-quality issue rather than a typical value.
+
+## Body Circumference Measurements
+
+```{r}
+circumference_long <- bodyfat_model %>%
+  select(all_of(circumference_vars)) %>%
+  pivot_longer(everything(), names_to = "feature", values_to = "value")
+
+circumference_plot <- ggplot(circumference_long, aes(x = value)) +
+  geom_histogram(aes(y = after_stat(density)), bins = 15, fill = "#2A9D8F", color = "white", alpha = 0.8) +
+  geom_density(color = "#E76F51", linewidth = 0.9, adjust = 1.0) +
+  facet_wrap(~ feature, scales = "free_y", ncol = 2) +
+  labs(
+    title = "Distributions of Body Circumference Measurements",
+    subtitle = "Faceted histograms with density overlays; free y-scales",
+    x = "Measurement",
+    y = "Density"
+  ) +
+  theme_minimal(base_size = 11)
+
+circumference_plot
+```
+
+The torso measurements, especially Chest, Abdomen, and Hip, tend to be wider and more right-skewed, reflecting body-size variation in the sample. The smaller limb and wrist measures are more tightly clustered, with relatively narrower spreads. Free y-scales make the differences in shape and dispersion easier to compare across variables.
+
+## Faceted Box Plots for All Modeling Features
+
+```{r}
+all_model_long <- bodyfat_model %>%
+  pivot_longer(everything(), names_to = "feature", values_to = "value")
+
+extreme_rows <- bodyfat_raw %>%
+  mutate(row_id = row_number(),
+         flag = case_when(
+           BodyFat == min(BodyFat, na.rm = TRUE) ~ "BodyFat minimum",
+           Height == min(Height, na.rm = TRUE) ~ "Height minimum",
+           TRUE ~ NA_character_
+         )) %>%
+  filter(!is.na(flag))
+
+extreme_long <- extreme_rows %>%
+  pivot_longer(-c(row_id, flag), names_to = "feature", values_to = "value") %>%
+  filter(feature != "Density")
+
+boxplot_plot <- ggplot(all_model_long, aes(x = "", y = value)) +
+  geom_boxplot(fill = "#E9C46A", color = "#444444", outlier.alpha = 0.5) +
+  geom_point(
+    data = extreme_long,
+    aes(x = "", y = value),
+    inherit.aes = FALSE,
+    color = "#D1495B",
+    size = 2
+  ) +
+  geom_text(
+    data = extreme_long,
+    aes(x = "", y = value, label = paste0(flag, " (row ", row_id, ")")),
+    inherit.aes = FALSE,
+    nudge_x = 0.18,
+    hjust = 0,
+    color = "#D1495B",
+    size = 3,
+    check_overlap = TRUE
+  ) +
+  facet_wrap(~ feature, scales = "free_y", ncol = 4) +
+  labs(
+    title = "Faceted Box Plots for All Modeling Features",
+    subtitle = "Red markers highlight the extreme observations identified earlier",
+    x = NULL,
+    y = NULL
+  ) +
+  theme_minimal(base_size = 10) +
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank())
+
+boxplot_plot
+```
+
+Most variables show at least mild skewness and a few high-end outliers, which is typical for body-measurement data. The red labels identify the two problematic records from the earlier EDA: the near-zero BodyFat value and the unusually low Height value. Those points stand out clearly and should be reviewed as likely data errors.
+
+## Age, Weight, and Height
+
+```{r}
+age_weight_height_long <- bodyfat_model %>%
+  select(Age, Weight, Height) %>%
+  pivot_longer(everything(), names_to = "feature", values_to = "value")
+
+age_weight_height_plot <- ggplot(age_weight_height_long, aes(x = value)) +
+  geom_histogram(aes(y = after_stat(density)), bins = 15, fill = "#457B9D", color = "white", alpha = 0.85) +
+  geom_density(color = "#E63946", linewidth = 1.0, adjust = 1.05) +
+  facet_wrap(~ feature, scales = "free_y", nrow = 1) +
+  labs(
+    title = "Distributions of Age, Weight, and Height",
+    subtitle = "Histogram and density overlays for the remaining key predictors",
+    x = NULL,
+    y = "Density"
+  ) +
+  theme_minimal(base_size = 12)
+
+age_weight_height_plot
+```
+
+Age is typically moderately spread and often slightly right-skewed, Weight is more dispersed with a stronger right tail, and Height is usually fairly concentrated except for the implausibly low observation. Together, these variables show a mix of broad spread and isolated extremes, so they are worth checking for data quality and scale differences before modeling.
+
+## Closing Notes
+
+The distribution plots show that BodyFat is skewed and has a suspicious low-end extreme, circumference variables are strongly shaped by body-size differences, and Age/Weight/Height have distinct spread patterns. The main data-quality concern remains the extreme near-zero BodyFat value and the implausibly low Height value.

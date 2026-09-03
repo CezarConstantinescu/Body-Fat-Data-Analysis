@@ -1,0 +1,232 @@
+﻿
+## Objective
+
+This report provides a focused correlation analysis for the BodyFat dataset after removing `Density` (a leakage variable).
+
+It includes:
+1. A single-row heatmap of each predictor's Pearson correlation with `BodyFat`.
+2. Side-by-side scatter plots for the top 5 predictors by absolute correlation with `BodyFat`, with trend lines, 95% confidence bands, and `r` annotations.
+3. A hierarchically clustered full correlation heatmap across all remaining numeric features, plus cluster membership labels.
+4. Discussion of multicollinearity risks for linear models and implications for tree-based models.
+
+## Setup and Data
+
+```{r}
+library(tidyverse)
+
+bodyfat_raw <- read_csv("data/bodyfat.csv", show_col_types = FALSE)
+
+# Remove leakage variable before correlation analysis
+bodyfat <- bodyfat_raw %>%
+  select(-Density)
+
+predictor_names <- setdiff(names(bodyfat), "BodyFat")
+
+corr_target <- map_dfr(predictor_names, function(v) {
+  tibble(
+    Predictor = v,
+    r = cor(bodyfat[[v]], bodyfat$BodyFat, use = "complete.obs")
+  )
+}) %>%
+  mutate(abs_r = abs(r)) %>%
+  arrange(desc(abs_r))
+
+corr_target
+```
+
+## Predictor vs BodyFat Correlation Heatmap (Single Row)
+
+```{r}
+heatmap_target <- corr_target %>%
+  mutate(Predictor = fct_reorder(Predictor, r))
+
+p_target_heatmap <- ggplot(heatmap_target, aes(x = Predictor, y = "BodyFat", fill = r)) +
+  geom_tile(color = "white", linewidth = 0.4) +
+  geom_text(aes(label = sprintf("%.2f", r)), size = 3.1, color = "#111111") +
+  scale_fill_gradient2(
+    low = "#2166AC",
+    mid = "#F7F7F7",
+    high = "#B2182B",
+    midpoint = 0,
+    limits = c(-1, 1)
+  ) +
+  labs(
+    title = "Linear Relevance of Each Predictor to BodyFat",
+    subtitle = "Single-row Pearson correlation heatmap",
+    x = NULL,
+    y = NULL,
+    fill = "Pearson r"
+  ) +
+  theme_minimal(base_size = 11) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    panel.grid = element_blank()
+  )
+
+p_target_heatmap
+```
+
+## Top 5 Predictors: Scatter Plots with Trend Lines
+
+```{r}
+top5 <- corr_target %>%
+  slice_head(n = 5)
+
+top5_long <- bodyfat %>%
+  mutate(row_id = row_number()) %>%
+  select(row_id, BodyFat, all_of(top5$Predictor)) %>%
+  pivot_longer(
+    cols = all_of(top5$Predictor),
+    names_to = "Predictor",
+    values_to = "Value"
+  )
+
+# Compute per-predictor standardized residuals to flag points far from the linear trend
+outlier_points <- top5_long %>%
+  group_by(Predictor) %>%
+  group_modify(~ {
+    fit <- lm(BodyFat ~ Value, data = .x)
+    .x %>%
+      mutate(std_resid = as.numeric(rstandard(fit))) %>%
+      filter(abs(std_resid) >= 2)
+  }) %>%
+  ungroup()
+
+r_labels <- top5 %>%
+  transmute(Predictor, label = paste0("r = ", sprintf("%.2f", r)))
+
+p_top5 <- ggplot(top5_long, aes(x = Value, y = BodyFat)) +
+  geom_point(alpha = 0.7, color = "#2C3E50", size = 1.9) +
+  geom_smooth(method = "lm", se = TRUE, color = "#C0392B", fill = "#F5B7B1", linewidth = 0.8) +
+  geom_point(
+    data = outlier_points,
+    aes(x = Value, y = BodyFat),
+    inherit.aes = FALSE,
+    color = "#D62728",
+    size = 2.5
+  ) +
+  geom_text(
+    data = outlier_points,
+    aes(x = Value, y = BodyFat, label = row_id),
+    inherit.aes = FALSE,
+    nudge_y = 0.6,
+    size = 2.8,
+    color = "#D62728",
+    check_overlap = TRUE
+  ) +
+  geom_text(
+    data = r_labels,
+    aes(x = -Inf, y = Inf, label = label),
+    inherit.aes = FALSE,
+    hjust = -0.1,
+    vjust = 1.1,
+    size = 3.3,
+    fontface = "bold",
+    color = "#1B2631"
+  ) +
+  facet_wrap(~ Predictor, scales = "free_x", nrow = 1) +
+  labs(
+    title = "Top 5 Predictors vs BodyFat",
+    subtitle = "Linear fits with 95% confidence intervals; red points are |standardized residual| >= 2",
+    x = "Predictor value",
+    y = "BodyFat (%)"
+  ) +
+  theme_minimal(base_size = 11)
+
+p_top5
+```
+
+```{r}
+outlier_summary <- outlier_points %>%
+  arrange(Predictor, desc(abs(std_resid))) %>%
+  group_by(Predictor) %>%
+  summarise(
+    flagged_rows = paste(row_id, collapse = ", "),
+    max_abs_std_resid = round(max(abs(std_resid)), 2),
+    .groups = "drop"
+  )
+
+outlier_summary
+```
+
+Interpretation:
+- The top predictors typically show strong positive and near-linear association with `BodyFat`.
+- Red labels identify observations that deviate most strongly from each fitted line and may deserve quality checks or robust-model sensitivity analysis.
+
+## Full Hierarchically Clustered Correlation Heatmap
+
+```{r}
+features_all <- bodyfat %>% select(where(is.numeric))
+
+cor_full <- cor(features_all, use = "pairwise.complete.obs")
+
+# Cluster by absolute-correlation similarity so highly related measurements are adjacent
+distance_matrix <- as.dist(1 - abs(cor_full))
+hc <- hclust(distance_matrix, method = "ward.D2")
+ordered_features <- colnames(cor_full)[hc$order]
+
+cor_ordered <- cor_full[ordered_features, ordered_features]
+
+cor_long <- as.data.frame(as.table(cor_ordered)) %>%
+  as_tibble() %>%
+  rename(Feature1 = Var1, Feature2 = Var2, Correlation = Freq)
+
+p_full_heatmap <- ggplot(cor_long, aes(x = Feature1, y = Feature2, fill = Correlation)) +
+  geom_tile(color = "white", linewidth = 0.25) +
+  scale_fill_gradient2(
+    low = "#2166AC",
+    mid = "#F7F7F7",
+    high = "#B2182B",
+    midpoint = 0,
+    limits = c(-1, 1)
+  ) +
+  labs(
+    title = "Hierarchically Clustered Correlation Heatmap",
+    subtitle = "Features are ordered by Ward clustering on 1 - |correlation| distance",
+    x = NULL,
+    y = NULL,
+    fill = "Pearson r"
+  ) +
+  theme_minimal(base_size = 10) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1),
+    panel.grid = element_blank()
+  ) +
+  coord_equal()
+
+p_full_heatmap
+```
+
+```{r}
+# Label natural groups from hierarchical clustering
+cluster_assign <- cutree(hc, k = 4)
+
+cluster_membership <- tibble(
+  Feature = names(cluster_assign),
+  Cluster = paste0("Cluster ", cluster_assign)
+) %>%
+  arrange(Cluster, Feature)
+
+cluster_summary <- cluster_membership %>%
+  group_by(Cluster) %>%
+  summarise(Features = paste(Feature, collapse = ", "), .groups = "drop")
+
+cluster_summary
+```
+
+Interpretation:
+- Clusters usually reflect anatomically related regions (for example, torso circumferences together, limb measures together, and global size variables such as `Weight`).
+- Strong within-cluster correlation indicates substantial predictor redundancy.
+
+## Multicollinearity Discussion
+
+- Many circumference variables measure overlapping body-size information, so high pairwise correlations are expected and visible in the clustered heatmap.
+- In linear regression, strong multicollinearity can inflate coefficient variance, making slope estimates unstable and sensitive to small data perturbations.
+- This instability affects interpretation more than pure prediction: coefficients may flip sign or become statistically weak despite useful combined predictive signal.
+- Regularized linear models (ridge, lasso, elastic net) can help stabilize estimation by shrinking coefficients and handling redundancy.
+- Tree-based models (random forests, gradient boosting) are generally less sensitive to linear multicollinearity for predictive accuracy because they split recursively and can use one of several correlated features interchangeably.
+- However, correlated predictors can still spread feature importance across variables in tree ensembles, so importance rankings should be interpreted with caution.
+
+## Conclusion
+
+The correlation structure confirms that central body-size predictors are most linearly informative for `BodyFat`, with clear redundancy among related measurements. This supports using multicollinearity-aware linear approaches for interpretability and tree-based ensembles for robust predictive performance.

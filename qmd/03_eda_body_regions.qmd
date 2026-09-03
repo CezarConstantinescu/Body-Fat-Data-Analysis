@@ -1,0 +1,289 @@
+﻿
+## Introduction
+
+This exploratory data analysis examines how body measurements vary across different body fat percentage levels. The analysis divides the 252 men in the dataset into three equal-sized groups (terciles) based on body fat percentage, then investigates patterns in body circumference measurements across these groups.
+
+## Data Preparation
+
+```{r}
+#| warning: false
+#| message: false
+
+# Load required libraries
+library(tidyverse)
+library(ggplot2)
+library(GGally)
+library(gridExtra)
+library(scales)
+
+# Load the dataset
+bodyfat <- read.csv("data/bodyfat.csv")
+
+# Display first few rows
+head(bodyfat)
+```
+
+```{r}
+#| warning: false
+#| message: false
+
+# Create BodyFat terciles
+bodyfat <- bodyfat %>%
+  mutate(
+    BodyFatGroup = cut(
+      BodyFat,
+      breaks = quantile(BodyFat, probs = c(0, 1/3, 2/3, 1)),
+      labels = c("Low", "Medium", "High"),
+      include.lowest = TRUE
+    )
+  )
+
+# Verify tercile distribution
+table(bodyfat$BodyFatGroup)
+
+# Summary statistics by group
+bodyfat %>%
+  group_by(BodyFatGroup) %>%
+  summarise(
+    Count = n(),
+    Min = min(BodyFat),
+    Mean = mean(BodyFat),
+    Max = max(BodyFat),
+    .groups = "drop"
+  ) %>%
+  knitr::kable(caption = "Body Fat Tercile Distribution")
+```
+
+## Visualization 1: Grouped Box Plot of Body Circumference Measurements
+
+```{r}
+#| warning: false
+#| message: false
+#| fig-width: 14
+#| fig-height: 8
+
+# Define anatomical order for body measurements
+measurement_order <- c("Neck", "Chest", "Abdomen", "Hip", "Thigh", 
+                       "Knee", "Ankle", "Biceps", "Forearm", "Wrist")
+
+# Prepare data for visualization (convert to long format)
+bodyfat_long <- bodyfat %>%
+  select(BodyFatGroup, all_of(measurement_order)) %>%
+  pivot_longer(
+    cols = -BodyFatGroup,
+    names_to = "Measurement",
+    values_to = "Value"
+  ) %>%
+  mutate(
+    Measurement = factor(Measurement, levels = measurement_order)
+  )
+
+# Create grouped box plot
+ggplot(bodyfat_long, aes(x = Measurement, y = Value, fill = BodyFatGroup)) +
+  geom_boxplot(alpha = 0.7, outlier.size = 2) +
+  scale_fill_manual(
+    values = c("Low" = "#2ecc71", "Medium" = "#f39c12", "High" = "#e74c3c"),
+    name = "Body Fat Group"
+  ) +
+  labs(
+    title = "Body Circumference Measurements by Body Fat Group",
+    subtitle = "Anatomical arrangement from head to feet",
+    x = "Body Measurement (cm)",
+    y = "Measurement Value (cm)",
+    caption = "Data: Body Fat Dataset (n=252 men)"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 11),
+    axis.text.y = element_text(size = 10),
+    plot.title = element_text(size = 14, face = "bold", margin = margin(b = 5)),
+    plot.subtitle = element_text(size = 12, color = "gray50", margin = margin(b = 10)),
+    legend.position = "right",
+    panel.grid.major.y = element_line(color = "gray90", size = 0.3),
+    panel.grid.minor.y = element_blank()
+  )
+```
+
+## Visualization 2: Parallel Coordinates Plot
+
+```{r}
+#| warning: false
+#| message: false
+#| fig-width: 14
+#| fig-height: 8
+
+# Prepare data for parallel coordinates (normalize measurements)
+bodyfat_normalized <- bodyfat %>%
+  select(BodyFatGroup, all_of(measurement_order)) %>%
+  mutate(
+    across(all_of(measurement_order), 
+           ~(. - min(.)) / (max(.) - min(.)),
+           .names = "{.col}_norm")
+  ) %>%
+  select(BodyFatGroup, ends_with("_norm")) %>%
+  rename_with(~str_remove(., "_norm"), ends_with("_norm"))
+
+# Create a long format for parallel coordinates
+bodyfat_pcoords <- bodyfat_normalized %>%
+  rowid_to_column("Individual") %>%
+  pivot_longer(
+    cols = -c(Individual, BodyFatGroup),
+    names_to = "Measurement",
+    values_to = "Normalized_Value"
+  ) %>%
+  mutate(
+    Measurement = factor(Measurement, levels = measurement_order)
+  )
+
+# Create parallel coordinates plot
+ggplot(bodyfat_pcoords, aes(x = Measurement, y = Normalized_Value, 
+                             group = Individual, color = BodyFatGroup)) +
+  geom_line(alpha = 0.2, size = 0.5) +
+  scale_color_manual(
+    values = c("Low" = "#2ecc71", "Medium" = "#f39c12", "High" = "#e74c3c"),
+    name = "Body Fat Group"
+  ) +
+  labs(
+    title = "Parallel Coordinates: Individual Body Measurement Profiles",
+    subtitle = "Each line represents one individual; values normalized (0-1) for comparison",
+    x = "Body Measurement",
+    y = "Normalized Value",
+    caption = "Data: Body Fat Dataset (n=252 men)"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 11),
+    axis.text.y = element_text(size = 10),
+    plot.title = element_text(size = 14, face = "bold", margin = margin(b = 5)),
+    plot.subtitle = element_text(size = 12, color = "gray50", margin = margin(b = 10)),
+    legend.position = "right",
+    panel.grid.major.y = element_line(color = "gray90", size = 0.3)
+  )
+```
+
+## Visualization 3: Box Plots for Age, Weight, and Height
+
+```{r}
+#| warning: false
+#| message: false
+#| fig-width: 14
+#| fig-height: 5
+
+# Prepare data for demographic variables
+demographic_data <- bodyfat %>%
+  select(BodyFatGroup, Age, Weight, Height) %>%
+  pivot_longer(
+    cols = -BodyFatGroup,
+    names_to = "Variable",
+    values_to = "Value"
+  )
+
+# Create separate box plots with faceting
+ggplot(demographic_data, aes(x = BodyFatGroup, y = Value, fill = BodyFatGroup)) +
+  geom_boxplot(alpha = 0.7, outlier.size = 2) +
+  facet_wrap(~Variable, scales = "free_y", nrow = 1) +
+  scale_fill_manual(
+    values = c("Low" = "#2ecc71", "Medium" = "#f39c12", "High" = "#e74c3c"),
+    name = "Body Fat Group"
+  ) +
+  labs(
+    title = "Demographic Variables by Body Fat Group",
+    subtitle = "Age (years), Weight (lbs), and Height (inches)",
+    x = "Body Fat Group",
+    y = "Value",
+    caption = "Data: Body Fat Dataset (n=252 men)"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 14, face = "bold", margin = margin(b = 5)),
+    plot.subtitle = element_text(size = 12, color = "gray50", margin = margin(b = 10)),
+    axis.text = element_text(size = 10),
+    legend.position = "bottom",
+    panel.grid.major.y = element_line(color = "gray90", size = 0.3),
+    strip.text = element_text(size = 11, face = "bold")
+  )
+```
+
+## Summary Statistics by Body Fat Group
+
+```{r}
+#| warning: false
+#| message: false
+
+# Summary statistics for all measurements
+summary_table <- bodyfat %>%
+  group_by(BodyFatGroup) %>%
+  summarise(
+    across(all_of(measurement_order),
+           list(Mean = mean, SD = sd),
+           .names = "{.col}_{.fn}"),
+    Age_Mean = mean(Age),
+    Age_SD = sd(Age),
+    Weight_Mean = mean(Weight),
+    Weight_SD = sd(Weight),
+    Height_Mean = mean(Height),
+    Height_SD = sd(Height),
+    .groups = "drop"
+  )
+
+# Display for body circumference measurements
+circumference_summary <- bodyfat %>%
+  group_by(BodyFatGroup) %>%
+  summarise(
+    across(all_of(measurement_order),
+           list(Mean = ~round(mean(.), 2), SD = ~round(sd(.), 2)),
+           .names = "{.col}_{.fn}"),
+    .groups = "drop"
+  ) %>%
+  pivot_longer(-BodyFatGroup) %>%
+  separate(name, into = c("Measurement", "Statistic"), sep = "_") %>%
+  pivot_wider(names_from = c(Statistic, BodyFatGroup), values_from = value) %>%
+  select(Measurement, contains("Mean"), contains("SD"))
+
+knitr::kable(
+  circumference_summary,
+  caption = "Body Circumference Measurements: Mean (SD) by Group"
+)
+```
+
+## Analysis and Interpretation
+
+### Key Findings
+
+**1. Strongest Separators Between Low and High Body Fat Groups**
+
+The analysis reveals that **abdomen circumference** shows the most pronounced separation between the Low and High body fat groups, with the highest median values in the High group and the lowest in the Low group. This aligns with the README's note that abdomen is "often one of the most predictive measurements for body fat."
+
+Following abdomen, **chest**, **thigh**, and **hip** measurements also demonstrate clear stratification across the three body fat terciles, suggesting these body regions accumulate fat proportionally as overall body fat percentage increases.
+
+**2. Full-Body Pattern Analysis**
+
+The grouped box plot reveals a consistent pattern: measurements become increasingly larger as we move from the Low to High body fat groups across virtually all body regions. This suggests that elevated body fat is not localized to a single region but manifests as a systemic increase in body circumference measurements.
+
+The parallel coordinates plot further illustrates this patternâ€”individuals in the High group consistently show elevated profiles across most measurements, while those in the Low group maintain lower values. The Medium group occupies an intermediate position, confirming the effectiveness of tercile stratification.
+
+**3. Anatomical Insights**
+
+- **Head/Neck Region**: Neck circumference shows modest variation across groups, suggesting this region is less affected by changes in overall body fat percentage.
+  
+- **Torso Region**: Chest, abdomen, and hip measurements demonstrate the strongest relationships with body fat classification. The abdomen measurement is particularly decisive.
+  
+- **Extremities**: Wrist, ankle, and forearm show less dramatic variation across groups compared to larger torso measurements, indicating that body fat accumulation concentrates in the central body regions.
+  
+- **Limbs**: Biceps and thigh show intermediate separation, indicating that fat deposition in limbs varies with overall body fat but less dramatically than in the torso.
+
+**4. Demographic Patterns**
+
+The demographic variables reveal that individuals in the High body fat group tend to have slightly higher mean ages and consistently higher weights compared to the Low group. Height shows minimal variation across groups, suggesting it is not a primary driver of body fat differences and serves as a useful normalization factor (as is common in body composition studies).
+
+**5. Notable Observations**
+
+- The inter-quartile range (spread) for most measurements increases from Low to High groups, suggesting greater heterogeneity in body measurements among higher body fat individuals.
+  
+- A few outliers appear in the Low body fat group, particularly for chest and abdomen measurements, potentially indicating athletic individuals with high muscle mass but low body fat.
+  
+- The parallel coordinates plot shows relatively clean stratification by color, validating the tercile grouping as a meaningful classification scheme.
+
+### Conclusion
+
+Body fat percentage is strongly associated with a generalized increase in body circumference measurements across all regions, with the greatest separation observed in torso measurements (especially abdomen, chest, and hip). This suggests that predicting body fat percentage using multiple body measurements is feasible, as the third circumference measurements collectively capture variation in overall body composition. The abdomen circumference emerges as the single most informative measurement for distinguishing between low and high body fat individuals.

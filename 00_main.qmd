@@ -1,0 +1,59 @@
+---
+title: "Body Fat Prediction: EDA and Predictive Modelling"
+authors:
+  - "HAGIU I. PAULA-CĂTĂLINA"
+  - "CONSTANTINESCU A. CEZAR"
+  - "IRIMIA L. NICOLAE"
+date: today
+format:
+  html:
+    embed-resources: true
+    toc: true
+    number-sections: true
+execute:
+  echo: true
+  warning: false
+  message: false
+---
+
+# Non-Graphical Exploratory Data Analysis
+
+A thorough non-graphical exploratory data analysis (EDA) of the BodyFat dataset, including structural inspection and identification of leakage variables. This section covers data shape, numeric summaries, and the critical discovery that `Density` is mathematically derived from `BodyFat` via Siri's equation and must be excluded from modeling.
+
+{{< include qmd/01_non_graphical_eda.qmd >}}
+
+# Distribution Analysis
+
+Visualization of the distribution of the target variable (`BodyFat`) and all numeric predictors through histograms and density plots. This section provides insights into the shape, spread, and outliers of each variable in the dataset.
+
+{{< include qmd/02_eda_distributions.qmd >}}
+
+# Body Regions and Body Fat Profiles
+
+Comparative analysis of body measurements across different body fat percentage levels. The dataset is divided into three equal-sized groups (terciles) based on body fat percentage, enabling investigation of patterns in body circumference measurements and their relationship to overall body fat composition.
+
+{{< include qmd/03_eda_body_regions.qmd >}}
+
+# Predictor vs Target Relationships
+
+Examination of individual relationships between each predictor and the target variable (`BodyFat`). This section includes faceted scatter plots with trend lines and confidence bands, showing the linear association strength between each predictor and body fat via Pearson correlation coefficients.
+
+{{< include qmd/04_eda_vs_target.qmd >}}
+
+# Multicollinearity and Predictor Redundancy
+
+Analysis of intercorrelations among body circumference predictors to identify redundancy and multicollinearity. Understanding which measurements carry overlapping information is crucial for building more parsimonious and interpretable models, and assessing whether all circumference measurements are necessary for accurate prediction.
+
+{{< include qmd/05_eda_multicollinearity.qmd >}}
+
+# Correlation Structure Summary
+
+Focused correlation analysis providing a concise view of predictor-target relationships. This section features a correlation heatmap and detailed scatter plots of the top 5 predictors by absolute correlation strength, offering a quick reference for feature importance in prediction.
+
+{{< include qmd/06_eda_correlation.qmd >}}
+
+# Fine Tuning Tree-Based Models
+
+Construction and hyperparameter tuning of two tree-based regression models using tidymodels: Random Forest and XGBoost. This section demonstrates the model development pipeline including data splitting, preprocessing, cross-validation, and performance comparison to identify the optimal model for body fat prediction.
+
+{{< include qmd/07_fine_tuning.qmd >}}

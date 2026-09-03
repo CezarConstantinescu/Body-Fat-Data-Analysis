@@ -1,0 +1,301 @@
+﻿
+## Objective
+
+This report performs a thorough non-graphical exploratory data analysis (EDA) of the BodyFat dataset.
+
+Key requirement addressed immediately:
+- All columns are numeric.
+- `Density` is a direct leakage variable because `BodyFat` is mathematically derived from it using Siri's equation:
+
+$$
+\text{BodyFat} = \frac{495}{\text{Density}} - 450
+$$
+
+Because of this exact deterministic relationship, `Density` must be removed before any realistic predictive modeling.
+
+## Setup and Data Loading
+
+```{r}
+library(tidyverse)
+
+bodyfat_raw <- read_csv("data/bodyfat.csv", show_col_types = FALSE)
+```
+
+## Data Structure Inspection (glimpse and summary)
+
+```{r}
+# Compact structure view
+bodyfat_raw %>% glimpse()
+
+# Numeric summaries for each feature
+summary(bodyfat_raw)
+```
+
+### Immediate Leakage Check for Density
+
+```{r}
+# Verify Siri equation numerically against observed BodyFat values
+bodyfat_with_check <- bodyfat_raw %>%
+  mutate(
+    BodyFat_from_Density = 495 / Density - 450,
+    Leakage_abs_error = abs(BodyFat - BodyFat_from_Density)
+  )
+
+bodyfat_with_check %>%
+  summarise(
+    max_abs_error = max(Leakage_abs_error),
+    mean_abs_error = mean(Leakage_abs_error),
+    min_abs_error = min(Leakage_abs_error)
+  )
+```
+
+Interpretation:
+- Near-zero reconstruction error confirms `Density` contains direct information about the target `BodyFat`.
+- Any model using `Density` would be unrealistically optimistic (target leakage).
+- For all downstream analysis intended to support modeling, use a dataset with `Density` removed.
+
+```{r}
+bodyfat <- bodyfat_raw %>% select(-Density)
+```
+
+## Dataset Dimensions, Types, and Duplicates
+
+```{r}
+# Shape
+c(rows = nrow(bodyfat_raw), columns = ncol(bodyfat_raw))
+
+# Confirm all columns are numeric in raw data
+sapply(bodyfat_raw, class)
+
+# Duplicate rows
+bodyfat_raw %>%
+  summarise(duplicate_rows = sum(duplicated(.)))
+```
+
+## Descriptive Statistics (Post-Leakage Removal)
+
+```{r}
+# Summary table for all original features (including Density for EDA completeness)
+summary_table_all_features <- map_dfr(names(bodyfat_raw), function(v) {
+  x <- bodyfat_raw[[v]]
+  mean_x <- mean(x, na.rm = TRUE)
+  sd_x <- sd(x, na.rm = TRUE)
+
+  tibble(
+    feature = v,
+    mean = mean_x,
+    median = median(x, na.rm = TRUE),
+    sd = sd_x,
+    iqr = IQR(x, na.rm = TRUE),
+    cv = ifelse(mean_x == 0, NA_real_, sd_x / mean_x)
+  )
+})
+
+summary_table_all_features
+```
+
+## Missing Value Analysis
+
+```{r}
+# Missingness by feature (count and percent)
+missing_by_feature <- bodyfat_raw %>%
+  summarise(across(everything(), ~ sum(is.na(.)))) %>%
+  pivot_longer(
+    cols = everything(),
+    names_to = "feature",
+    values_to = "missing_n"
+  ) %>%
+  mutate(missing_pct = 100 * missing_n / nrow(bodyfat_raw)) %>%
+  arrange(desc(missing_n), feature)
+
+missing_by_feature
+```
+
+```{r}
+# Missingness by observation (row-wise NA count)
+row_missing <- bodyfat_raw %>%
+  mutate(row_id = row_number(), missing_n = rowSums(is.na(across(everything())))) %>%
+  select(row_id, missing_n)
+
+row_missing %>%
+  summarise(
+    complete_rows = sum(missing_n == 0),
+    incomplete_rows = sum(missing_n > 0),
+    pct_complete_rows = 100 * mean(missing_n == 0),
+    max_missing_in_a_row = max(missing_n)
+  )
+```
+
+```{r}
+# Distribution of row-level missingness severity
+row_missing %>%
+  count(missing_n, name = "row_count") %>%
+  arrange(missing_n)
+```
+
+## Implausible Values and Data Quality Flags
+
+```{r}
+# Flag records that are statistically and/or physically implausible
+implausible_rows <- bodyfat_raw %>%
+  mutate(row_id = row_number()) %>%
+  filter(BodyFat <= 1 | Height < 55)
+
+implausible_rows %>%
+  select(row_id, BodyFat, Height, Age, Weight, Density, everything())
+```
+
+```{r}
+# Compact report of the two specific issues requested
+implausible_summary <- bodyfat_raw %>%
+  mutate(row_id = row_number()) %>%
+  summarise(
+    bodyfat_zero_row = row_id[which.min(BodyFat)],
+    bodyfat_zero_value = min(BodyFat, na.rm = TRUE),
+    low_height_row = row_id[which.min(Height)],
+    low_height_value = min(Height, na.rm = TRUE)
+  )
+
+implausible_summary
+```
+
+Interpretation and treatment recommendation:
+- The row with `BodyFat` approximately 0% (exactly 0.0 in this file) is biologically very unlikely for this population and should be treated as a suspect observation.
+- The row with `Height = 29.5` inches is not plausible for an adult male body-composition dataset and is most likely a data entry/coding error (for example, a dropped leading digit such as 69.5).
+- Decision guideline:
+  - If source records can be audited, correct clear typos (preferred).
+  - If audit is not possible, mark these values as invalid (`NA`) and use robust handling/imputation, or remove the affected row(s) in sensitivity analysis.
+  - Do not keep these records unchanged in a final modeling dataset; they are better treated as probable data errors than natural outliers.
+
+## Outlier Diagnostics by IQR Rule (Non-Graphical)
+
+```{r}
+outlier_counts <- map_dfr(names(bodyfat), function(v) {
+  x <- bodyfat[[v]]
+  q1 <- quantile(x, 0.25, na.rm = TRUE)
+  q3 <- quantile(x, 0.75, na.rm = TRUE)
+  iqr <- q3 - q1
+  lower <- q1 - 1.5 * iqr
+  upper <- q3 + 1.5 * iqr
+
+  tibble(
+    variable = v,
+    lower_bound = lower,
+    upper_bound = upper,
+    outlier_n = sum(x < lower | x > upper, na.rm = TRUE),
+    outlier_pct = 100 * mean(x < lower | x > upper, na.rm = TRUE)
+  )
+})
+
+outlier_counts %>% arrange(desc(outlier_n))
+```
+
+## Correlation Analysis (No Plots)
+
+```{r}
+# Correlation matrix after dropping Density
+cor_matrix <- cor(bodyfat, use = "pairwise.complete.obs")
+cor_matrix
+```
+
+```{r}
+# Rank strongest absolute correlations with BodyFat
+target_cor <- tibble(
+  variable = setdiff(colnames(bodyfat), "BodyFat"),
+  cor_with_bodyfat = cor_matrix[setdiff(colnames(bodyfat), "BodyFat"), "BodyFat"]
+) %>%
+  mutate(abs_cor = abs(cor_with_bodyfat)) %>%
+  arrange(desc(abs_cor))
+
+target_cor
+```
+
+```{r}
+# Top overall pairwise correlations (excluding self-pairs and duplicates)
+cor_long <- as.data.frame(as.table(cor_matrix)) %>%
+  as_tibble() %>%
+  rename(var1 = Var1, var2 = Var2, correlation = Freq) %>%
+  filter(var1 < var2) %>%
+  mutate(abs_correlation = abs(correlation)) %>%
+  arrange(desc(abs_correlation))
+
+head(cor_long, 15)
+```
+
+```{r}
+# All feature pairs with strong linear association (|correlation| > 0.8)
+high_cor_pairs <- cor_long %>%
+  filter(abs_correlation > 0.8) %>%
+  arrange(desc(abs_correlation))
+
+high_cor_pairs
+```
+
+```{r}
+# Focus on circumference clusters requested in the assignment
+focus_pairs <- tibble(
+  var1 = c("Chest", "Chest", "Abdomen", "Knee", "Knee", "Ankle"),
+  var2 = c("Abdomen", "Hip", "Hip", "Ankle", "Wrist", "Wrist")
+) %>%
+  mutate(
+    correlation = map2_dbl(var1, var2, ~ cor_matrix[.x, .y]),
+    abs_correlation = abs(correlation)
+  ) %>%
+  mutate(over_0_8 = abs_correlation > 0.8)
+
+focus_pairs
+```
+
+Interpretation:
+- Use `high_cor_pairs` as the definitive list of all pairs above 0.8.
+- In the torso measurements, `Chest`, `Abdomen`, and `Hip` typically form a strong cluster (high positive correlations), indicating overlapping adiposity/body-size information.
+- For `Knee`, `Ankle`, and `Wrist`, inspect `focus_pairs`: if `over_0_8` is `FALSE` for most/all combinations, these distal measurements are related but do not form as tight a cluster as torso circumferences.
+
+## Distribution Shape Indicators (Skewness/Kurtosis Without Plots)
+
+```{r}
+# Helper functions avoid extra package dependencies
+sample_skewness <- function(x) {
+  x <- x[!is.na(x)]
+  n <- length(x)
+  if (n < 3) return(NA_real_)
+  m <- mean(x)
+  s <- sd(x)
+  if (s == 0) return(0)
+  n / ((n - 1) * (n - 2)) * sum(((x - m) / s)^3)
+}
+
+sample_excess_kurtosis <- function(x) {
+  x <- x[!is.na(x)]
+  n <- length(x)
+  if (n < 4) return(NA_real_)
+  m <- mean(x)
+  s <- sd(x)
+  if (s == 0) return(0)
+  term1 <- (n * (n + 1)) / ((n - 1) * (n - 2) * (n - 3)) * sum(((x - m) / s)^4)
+  term2 <- (3 * (n - 1)^2) / ((n - 2) * (n - 3))
+  term1 - term2
+}
+
+shape_stats <- map_dfr(names(bodyfat), function(v) {
+  x <- bodyfat[[v]]
+  tibble(
+    variable = v,
+    skewness = sample_skewness(x),
+    excess_kurtosis = sample_excess_kurtosis(x)
+  )
+})
+
+shape_stats %>% arrange(desc(abs(skewness)))
+```
+
+## Final EDA Conclusions (Non-Graphical)
+
+1. All variables are numeric, as confirmed by structure inspection.
+2. `Density` is a direct deterministic transform of `BodyFat` under Siri's equation and is therefore a leakage feature.
+3. Any realistic supervised model for `BodyFat` should be built from `bodyfat` (the dataset with `Density` removed).
+4. Missing-value analysis indicates no formal `NA` values in this file, so imputation is not required for missingness itself.
+5. Data quality checks still identified implausible non-missing values (notably `BodyFat = 0.0` and `Height = 29.5`), which should be treated as probable data errors unless source verification supports them.
+6. The `high_cor_pairs` table provides the full list of feature pairs with `|r| > 0.8`, highlighting strong multicollinearity among body-size/circumference measures.
+7. The focused circumference check (`focus_pairs`) should be used to report whether torso measures (`Chest`/`Abdomen`/`Hip`) cluster more strongly than distal measures (`Knee`/`Ankle`/`Wrist`) in this dataset.
+8. Before modeling, combine these findings into preprocessing decisions: drop leakage (`Density`), handle implausible records, and mitigate multicollinearity (for example by feature selection, regularization, or dimensionality reduction).
